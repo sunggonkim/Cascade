@@ -1,0 +1,79 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Large language models (LLMs) have become the foundation of modern AI applications,
+from conversational agents to code generation and scientific discovery~\cite{openai2023gpt4, touvron2023llama}.
+As LLM inference scales to serve millions of users across increasingly long contexts,
+the key-value (KV) cache has emerged as a critical bottleneck.
+The KV cache stores attention states from previously processed tokens,
+enabling efficient autoregressive generation without recomputation.
+For models like LLaMA-70B with Grouped Query Attention (GQA) and 128K context windows,
+the KV cache alone can consume tens of gigabytes per request,
+creating significant memory pressure.
+
+The challenge of KV cache management has driven significant research in datacenter environments.
+Systems like vLLM~\cite{kwon2023vllm} introduced PagedAttention for memory-efficient KV cache allocation,
+while LMCache~\cite{lmcache2024} and Mooncake~\cite{qin2024mooncake} enable multi-tier caching with local NVMe as the primary offloading tier.
+However, these systems share a critical limitation: \textbf{session-specific block addressing}.
+When multiple sessions share identical system prompts (e.g., ``You are a helpful AI assistant...''),
+existing systems store and retrieve separate KV cache copies for each session,
+missing obvious deduplication opportunities.
+
+Furthermore, HPC systems present a \emph{fundamentally different storage architecture} than datacenters:
+
+\begin{itemize}[leftmargin=*,nosep]
+    \item \textbf{No local NVMe}: NERSC Perlmutter compute nodes lack local SSDs;
+    the only persistent storage is the Lustre parallel file system.
+    \item \textbf{Shared parallel file system}: Lustre provides high aggregate bandwidth (7.8 TB/s read)
+    but incurs severe metadata overhead for small-file operations.
+    \item \textbf{High-bandwidth interconnect}: Slingshot-11 provides 100 GB/s per node (4 $\times$ 25 GB/s NICs),
+    enabling efficient cross-node KV cache sharing via MPI.
+\end{itemize}
+
+When existing KV cache systems are naively deployed on HPC systems,
+they suffer significant performance degradation.
+Our measurements show that LMCache-style per-file storage incurs
+up to \textbf{29$\times$ lower read throughput} on Lustre compared to aggregated approaches
+due to metadata operations.
+
+\noindent\textbf{Key Insight: Content-Addressed Deduplication.}
+We observe that in production LLM serving scenarios, 20-100 system prompts are shared across thousands of sessions.
+If KV cache blocks are identified by their \emph{content hash} rather than session ID,
+blocks containing identical prefixes are automatically deduplicated.
+This insight, combined with HPC-native storage optimizations, motivates \Cascade.
+
+\noindent\textbf{Contributions.} This paper presents \Cascade, a content-addressed tiered KV cache storage system for HPC.
+Our contributions include:
+
+\begin{enumerate}[leftmargin=*,nosep]
+    \item \textbf{Content-Addressed Block Identification}:
+    We compute block IDs via SHA-256 hashing of KV tensor content,
+    enabling automatic deduplication of shared prefixes across sessions
+    without explicit coordination.
+
+    \item \textbf{Four-Tier HPC Storage Hierarchy}:
+    We design a four-tier hierarchy (GPU HBM $\rightarrow$ Local DRAM via \texttt{/dev/shm} $\rightarrow$ Remote DRAM via MPI $\rightarrow$ Lustre PFS)
+    with semantic-aware eviction that protects frequently-referenced prefix blocks.
+
+    \item \textbf{HPC-Optimized Data Placement}:
+    We demonstrate that aggregated single-file storage with Lustre striping (16 OSTs, 4MB stripe size)
+    achieves up to 29$\times$ better throughput than per-file approaches,
+    and develop rank-specific file naming to eliminate lock contention.
+
+    \item \textbf{MPI-Based Global Address Space}:
+    We leverage Cray MPICH on Slingshot-11 for efficient KV block transfer between nodes,
+    creating a distributed cache that scales with node count.
+
+    \item \textbf{Comprehensive Evaluation}:
+    We evaluate \Cascade on Perlmutter with configurations up to 256 nodes,
+    comparing against LMCache and other baselines.
+    \textbf{[TODO: Add specific performance numbers]}
+\end{enumerate}
+
+The remainder of this paper is organized as follows.
+Section~\ref{sec:background} provides background on KV cache management and HPC storage.
+Section~\ref{sec:design} presents the \Cascade design.
+Section~\ref{sec:evaluation} evaluates \Cascade on Perlmutter.
+Section~\ref{sec:related} discusses related work.
+Section~\ref{sec:discussion} addresses limitations.
+Section~\ref{sec:conclusion} concludes.

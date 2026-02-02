@@ -1,0 +1,140 @@
+\section{Background and Motivation}
+\label{sec:background}
+
+\subsection{KV Cache in LLM Inference}
+
+Transformer-based LLMs use the attention mechanism to capture token dependencies.
+During autoregressive generation, each new token attends to all previous tokens,
+requiring key and value tensors for the entire context.
+To avoid quadratic recomputation, systems cache these key-value pairs (the ``KV cache'').
+
+For a model with $L$ layers, $H_{kv}$ key-value heads (with GQA), and head dimension $D$,
+the KV cache size per token is:
+\begin{equation}
+    \text{KV}_\text{size} = 2 \times L \times H_{kv} \times D \times \text{precision}
+\end{equation}
+
+For LLaMA-2-70B with GQA ($L=80$, $H_{kv}=8$, $D=128$) in FP16,
+this amounts to:
+\begin{equation}
+    2 \times 80 \times 8 \times 128 \times 2 = 327,680 \text{ bytes} \approx 320\text{KB/token}
+\end{equation}
+
+With a 128K context window, the KV cache reaches approximately 40GB per request.
+For multi-tenant serving with hundreds of concurrent requests, aggregate KV cache demand
+far exceeds available GPU memory.
+
+\subsection{Existing KV Cache Storage Systems}
+
+\textbf{vLLM}~\cite{kwon2023vllm} introduced PagedAttention,
+managing KV cache as fixed-size pages (typically 16-256 tokens) to reduce memory fragmentation.
+However, vLLM stores KV cache entirely in GPU memory, limiting context lengths.
+
+\textbf{LMCache}~\cite{lmcache2024} extends PagedAttention with a multi-tier storage hierarchy:
+GPU HBM $\rightarrow$ CPU DRAM $\rightarrow$ local NVMe $\rightarrow$ remote storage.
+Each KV block is stored as a separate file with a \emph{session-specific} block ID,
+preventing cross-session deduplication.
+
+\textbf{Mooncake}~\cite{qin2024mooncake} optimizes for disaggregated storage,
+using RDMA to transfer KV blocks between prefill and decode clusters.
+It assumes dedicated NVMe pools for KV cache persistence.
+
+\textbf{Common limitations:}
+\begin{enumerate}[leftmargin=*,nosep]
+    \item \textbf{Session-specific addressing}: Block IDs include session/request identifiers,
+    preventing deduplication of identical content across sessions.
+    \item \textbf{NVMe dependency}: Local NVMe assumed as primary offloading tier (3-6 GB/s).
+    \item \textbf{Per-file storage}: Fine-grained eviction via separate files per block,
+    which incurs severe metadata overhead on parallel file systems.
+\end{enumerate}
+
+\subsection{HPC Storage Architecture: Perlmutter}
+
+NERSC's Perlmutter represents a modern HPC storage architecture:
+
+\textbf{Compute nodes:} 1,536 GPU nodes, each with 4 NVIDIA A100-40GB GPUs,
+AMD EPYC 7763 (64 cores), and 256GB DRAM.
+\textbf{Critically: no local NVMe storage.}
+
+\textbf{Parallel file system:} The Lustre-based \texttt{\$SCRATCH} provides:
+\begin{itemize}[leftmargin=*,nosep]
+    \item 44 PB capacity, 7.8 TB/s aggregate read bandwidth
+    \item All-flash architecture with 4M+ IOPS
+    \item Multi-MDT (Metadata Target) for improved metadata scalability
+    \item Stripe-based data distribution across OSTs
+\end{itemize}
+
+\textbf{Node-local storage:} \texttt{/dev/shm}, a tmpfs backed by DRAM ($\sim$128GB available).
+
+\textbf{Interconnect:} Slingshot-11 provides 100 GB/s per node (4 NICs $\times$ 25 GB/s),
+with Cray MPICH optimized for the fabric.
+
+\subsection{The Mismatch Problem}
+
+When datacenter KV cache systems are deployed on HPC systems,
+several mismatches cause severe performance degradation:
+
+\textbf{1. Per-file storage overhead on Lustre:}
+LMCache stores each KV block as a separate file.
+On Lustre, each file operation involves MDS (Metadata Server) RPCs, introducing 10-50ms latency.
+Table~\ref{tab:lustre-overhead} shows our measurements on Perlmutter:
+for 42KB blocks (32 tokens, LMCache default), per-file storage achieves only 233 MB/s read
+versus 6.8 GB/s for aggregated access---a \textbf{29$\times$ slowdown}.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{Per-file vs. aggregated storage throughput on Perlmutter Lustre (100 blocks).
+Per-file mimics LMCache; aggregated mimics \Cascade.}
+\label{tab:lustre-overhead}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Block Size} & \textbf{Per-file} & \textbf{Aggregated} & \textbf{Speedup} \\
+\midrule
+\multicolumn{4}{l}{\textit{Write Throughput}} \\
+42 KB (LMCache) & 61 MB/s & 766 MB/s & 12.6$\times$ \\
+256 KB (\Cascade) & 291 MB/s & 971 MB/s & 3.3$\times$ \\
+1 MB & 598 MB/s & 1,016 MB/s & 1.7$\times$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Read Throughput}} \\
+42 KB (LMCache) & 233 MB/s & 6,836 MB/s & \textbf{29.3$\times$} \\
+256 KB (\Cascade) & 1,298 MB/s & 7,582 MB/s & 5.8$\times$ \\
+1 MB & 3,211 MB/s & 7,962 MB/s & 2.5$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{2. Missing NVMe tier:}
+Without local NVMe, systems must choose between:
+(1) DRAM-only caching ($\sim$128GB limit per node),
+(2) Direct Lustre access (high latency), or
+(3) Remote memory via network.
+
+\textbf{3. Missed deduplication opportunity:}
+In production LLM serving, 20-100 system prompts are shared across thousands of sessions.
+Session-specific block IDs prevent leveraging this redundancy.
+
+\subsection{Opportunity: Content-Addressed HPC-Native KV Cache}
+
+Our key observations that motivate \Cascade:
+
+\begin{enumerate}[leftmargin=*,nosep]
+    \item \textbf{Content-level deduplication}:
+    If block IDs are derived from content hash (SHA-256),
+    identical prefixes automatically map to the same block,
+    reducing storage and improving cache hit rates.
+
+    \item \textbf{High-bandwidth interconnect}:
+    Slingshot-11 at 100 GB/s per node enables efficient remote DRAM access,
+    creating a third tier between local DRAM and Lustre.
+
+    \item \textbf{Aggregated file storage}:
+    Combining multiple blocks into large files (4-16 MB) with Lustre striping
+    amortizes metadata costs and achieves near-maximum bandwidth.
+
+    \item \textbf{MPI for tensor transfer}:
+    Cray MPICH on Slingshot is highly optimized;
+    for point-to-point KV block transfers, MPI matches or exceeds NCCL.
+\end{enumerate}
+
+These observations motivate \Cascade's content-addressed, four-tier design.

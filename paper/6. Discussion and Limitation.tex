@@ -1,0 +1,58 @@
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\textbf{Deduplication assumptions.}
+\Cascade's content-addressed deduplication is most effective
+when workloads share system prompts across sessions.
+For purely unique prompts, deduplication provides no benefit,
+though other optimizations (aggregated storage, multi-tier caching) still apply.
+Production LLM deployments typically use 20-100 standard system prompts,
+making deduplication broadly applicable.
+
+\textbf{Hash collision.}
+SHA-256 provides 128-bit collision resistance (using first 32 hex chars).
+The probability of collision is negligible for practical KV cache sizes
+($<2^{64}$ blocks). For higher assurance, full SHA-256 can be used
+at marginally higher storage cost.
+
+\textbf{Generalization to other HPC systems.}
+While evaluated on Perlmutter, \Cascade's design applies to other
+HPC systems lacking local NVMe (e.g., Frontier, Aurora, Alps).
+Systems with local burst buffers may add an additional NVMe tier.
+
+\textbf{Model size and architecture.}
+\Cascade is designed for large models (LLaMA-70B class) where KV cache
+pressure is significant. For smaller models fitting in GPU memory,
+the overhead of content hashing may not be justified.
+GQA and other KV-efficient architectures reduce per-token cache size
+but increase the relative overhead of storage operations.
+
+\textbf{Quantized KV cache.}
+Recent work explores INT4/INT8 KV cache quantization.
+\Cascade's content-addressed design works with quantized data,
+though hash computations would differ.
+Quantization is orthogonal and can be combined.
+
+\textbf{Prefetch effectiveness.}
+\Cascade's remote tier prefetch assumes predictable access patterns.
+For fully random access, prefetch provides limited benefit.
+Request routing in multi-tenant deployments typically exhibits
+locality that prefetch can exploit.
+
+\textbf{MPI constraints.}
+Using MPI for KV transfer requires MPI initialization,
+which may conflict with some deployment scenarios.
+Alternative implementations using direct Slingshot access
+or libfabric could address this limitation.
+
+\textbf{Interference with other jobs.}
+Heavy Lustre usage may impact other jobs on shared systems.
+\Cascade's aggregated storage and tiered caching reduce Lustre pressure
+compared to per-file approaches, but rate limiting may be needed
+for very large deployments.
+
+\textbf{Security and privacy.}
+KV cache contains processed input data, potentially including sensitive information.
+\Cascade does not currently encrypt cached data;
+adding encryption would impact performance.
+Access control relies on standard HPC mechanisms (POSIX permissions, quotas).

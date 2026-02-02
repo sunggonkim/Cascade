@@ -1,0 +1,86 @@
+%%
+%% SC26 Submission - Cascade: Content-Addressed Tiered KV Cache Storage for HPC-Scale LLM Inference
+%%
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+%% Packages
+\usepackage{amsmath}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage{amsfonts}
+\usepackage{multirow}
+\usepackage{xspace}
+\usepackage{pifont}
+\usepackage[caption=false]{subfig}
+\usepackage{float}
+\usepackage{url}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{fit,shapes,arrows,positioning}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{caption}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+%% Space-saving adjustments
+\setlength{\tabcolsep}{2pt}
+\setlength{\textfloatsep}{4pt plus 1.0pt minus 2.0pt}
+\setlength{\floatsep}{4pt plus 1.0pt minus 2.0pt}
+\setlength{\intextsep}{4pt plus 1.0pt minus 2.0pt}
+\setlength{\dbltextfloatsep}{4pt plus 1.0pt minus 2.0pt}
+\setlength{\dblfloatsep}{4pt plus 1.0pt minus 2.0pt}
+\setlength{\abovedisplayskip}{3pt}
+\setlength{\belowdisplayskip}{3pt}
+\setlength{\abovecaptionskip}{2pt}
+\setlength{\belowcaptionskip}{0pt}
+\renewcommand{\arraystretch}{0.85}
+
+%% Commands
+\newcommand{\Cascade}{\textsc{Cascade}\xspace}
+\newcommand{\cmark}{{\color{green!70!black}\ding{51}}}
+\newcommand{\xmark}{{\color{red!80!black}\ding{55}}}
+\newcommand{\pmark}{{\color{orange!80!black}$\triangle$}}
+
+\begin{document}
+
+\title{\Cascade: Content-Addressed Tiered KV Cache Storage\\for HPC-Scale LLM Inference}
+
+%% Anonymous author block for double-blind review
+\author{}
+
+\maketitle
+
+\begin{abstract}
+Large language model (LLM) inference at HPC scale requires efficient KV cache management to support long contexts and multi-node serving.
+Existing KV cache storage systems such as LMCache and Mooncake are optimized for datacenter environments with local NVMe storage and session-specific block addressing, limiting cross-session deduplication and HPC deployment.
+This paper presents \Cascade, a four-tier content-addressed KV cache storage system designed for HPC environments.
+\Cascade introduces: (1) \textbf{content-addressed block identification} via SHA-256 hashing for automatic deduplication of shared prefixes across sessions,
+(2) a \textbf{four-tier storage hierarchy} (GPU HBM $\rightarrow$ Local DRAM $\rightarrow$ Remote DRAM via MPI $\rightarrow$ Lustre PFS) with semantic-aware eviction that protects frequently-shared prefix blocks,
+and (3) \textbf{HPC-optimized data placement} using aggregated files with Lustre striping to overcome metadata overhead.
+Our key insight is that content-addressed deduplication combined with an MPI-based global address space achieves significant storage savings for multi-tenant LLM workloads sharing system prompts.
+
+\textbf{[TODO: Finalize evaluation numbers after experiments on Perlmutter]}
+
+Evaluated on NERSC Perlmutter with up to 256 nodes, \Cascade targets XX\% higher cache hit rates and XX$\times$ lower time-to-first-token compared to LMCache and other datacenter-optimized baselines.
+\end{abstract}
+
+\begin{IEEEkeywords}
+High Performance Computing, Large Language Models, KV Cache, Content-Addressed Storage, Distributed Inference, Deduplication
+\end{IEEEkeywords}
+
+\input{1. Introduction.tex}
+\input{2. Background.tex}
+\input{3. Design.tex}
+\input{4. Evaluation.tex}
+\input{5. Related Works.tex}
+\input{6. Discussion and Limitation.tex}
+\input{7. Conclusion.tex}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

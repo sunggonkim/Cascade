@@ -1,0 +1,115 @@
+\section{Related Work}
+\label{sec:related}
+
+We position \Cascade at the intersection of three research areas:
+KV cache management for LLM serving, content-addressed storage, and HPC I/O systems.
+Table~\ref{tab:related-comparison} summarizes key differences.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\caption{Comparison of KV cache storage approaches.}
+\label{tab:related-comparison}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{System} & \textbf{Content-} & \textbf{Dedup} & \textbf{Multi-} & \textbf{PFS} & \textbf{MPI} \\
+& \textbf{Addressed} & & \textbf{Node} & \textbf{Opt.} & \\
+\midrule
+vLLM~\cite{kwon2023vllm} & \xmark & \xmark & \xmark & \xmark & \xmark \\
+LMCache~\cite{lmcache2024} & \xmark & \xmark & \xmark & \xmark & \xmark \\
+Mooncake~\cite{qin2024mooncake} & \xmark & \xmark & \cmark & \xmark & \xmark \\
+CacheBlend & \pmark & \pmark & \xmark & \xmark & \xmark \\
+\midrule
+Hermes~\cite{kougkas2018hermes} & \xmark & \xmark & \cmark & \cmark & \xmark \\
+DAOS~\cite{liang2020daos} & \xmark & \xmark & \cmark & \cmark & \xmark \\
+\midrule
+\textbf{\Cascade} & \cmark & \cmark & \cmark & \cmark & \cmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{KV Cache Management for LLM Serving}
+
+\textbf{Memory-efficient attention.}
+vLLM~\cite{kwon2023vllm} introduced PagedAttention,
+managing KV cache as fixed-size pages to reduce fragmentation.
+FlashAttention~\cite{dao2022flashattention} optimizes attention computation
+but does not address storage.
+Both are GPU-memory-only solutions.
+
+\textbf{Multi-tier KV caching.}
+LMCache~\cite{lmcache2024} extends PagedAttention with a multi-tier hierarchy
+using local NVMe as the primary offloading tier.
+CacheGen adds compression for network-efficient streaming.
+These systems use \emph{session-specific block IDs},
+preventing cross-session deduplication.
+
+\textbf{Disaggregated KV cache.}
+Mooncake~\cite{qin2024mooncake} disaggregates prefill and decode with dedicated KV pools.
+Infinite-LLM and DistServe~\cite{zhong2024distserve} optimize resource utilization
+through phase separation.
+These systems assume datacenter networking and local NVMe,
+not HPC interconnects or parallel file systems.
+
+\textbf{Gap:} Existing LLM KV cache systems use session-specific addressing
+and assume local NVMe.
+None exploit content-based deduplication or HPC-specific characteristics.
+
+\subsection{Content-Addressed Storage}
+
+Content-addressed storage (CAS) identifies data by content hash,
+pioneered by systems like Venti and LBFS.
+Modern applications include:
+
+\textbf{Git:} Uses SHA-1 content hashes for objects, enabling deduplication.
+
+\textbf{Container registries:} Docker uses content-addressed layers,
+dramatically reducing storage for similar images.
+
+\textbf{Deduplication storage:} ZFS, NetApp, and enterprise storage
+use content fingerprinting for deduplication.
+
+\textbf{Application to KV cache:}
+To our knowledge, \Cascade is the first to apply content-addressed storage
+to LLM KV cache, exploiting the fact that identical system prompts
+produce identical KV tensors.
+
+\subsection{HPC Storage and I/O Systems}
+
+\textbf{Parallel file systems.}
+Lustre~\cite{schwan2003lustre} and GPFS~\cite{schmuck2002gpfs}
+provide high-bandwidth I/O for HPC through striping.
+However, they are optimized for large sequential I/O,
+not fine-grained KV cache access.
+Metadata operations are particularly costly.
+
+\textbf{Burst buffers and tiered storage.}
+Burst buffers~\cite{liu2012role} absorb bursty I/O with node-local NVMe.
+Hermes~\cite{kougkas2018hermes} provides hierarchical buffered I/O.
+UnifyFS aggregates node-local storage.
+DAOS~\cite{liang2020daos} offers object storage for NVM.
+\emph{All assume node-local NVMe}, unavailable on Perlmutter compute nodes.
+
+\textbf{HPC caching:}
+Some HPC systems use distributed memory caching (e.g., Memcached clusters),
+but these are not optimized for large tensor data
+and face deployment challenges on batch-scheduled systems.
+
+\textbf{Gap:} No prior HPC storage work addresses LLM-specific access patterns,
+content-addressed deduplication, or the no-local-NVMe constraint.
+
+\subsection{Positioning of \Cascade}
+
+\Cascade uniquely combines:
+\begin{itemize}[leftmargin=*,nosep]
+    \item \textbf{Content-addressed deduplication} from CAS systems
+    \item \textbf{Multi-tier hierarchy} from LLM caching systems
+    \item \textbf{HPC-native optimizations} (MPI, Lustre striping, /dev/shm)
+\end{itemize}
+
+Unlike datacenter systems, \Cascade treats network-accessible remote DRAM
+as a primary tier (enabled by Slingshot's high bandwidth)
+and uses aggregated file storage to overcome Lustre metadata overhead.
+
+Unlike general HPC storage, \Cascade understands KV cache semantics
+(prefix sharing, semantic eviction) and exploits content-based deduplication.

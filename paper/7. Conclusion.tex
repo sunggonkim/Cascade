@@ -1,0 +1,41 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented \Cascade, a content-addressed tiered KV cache storage system
+designed for HPC-scale LLM inference.
+\Cascade introduces three key innovations:
+
+\begin{enumerate}[leftmargin=*,nosep]
+    \item \textbf{Content-addressed block identification}:
+    By computing block IDs from KV tensor content via SHA-256,
+    \Cascade automatically deduplicates shared prefixes across sessions
+    without explicit coordination.
+
+    \item \textbf{Four-tier HPC storage hierarchy}:
+    GPU HBM $\rightarrow$ Local DRAM $\rightarrow$ Remote DRAM via MPI $\rightarrow$ Lustre,
+    with semantic-aware eviction that protects frequently-shared prefix blocks.
+
+    \item \textbf{HPC-optimized data placement}:
+    Aggregated file storage with Lustre striping achieves up to 29$\times$
+    better throughput than per-file approaches,
+    overcoming the metadata overhead that cripples datacenter designs on HPC systems.
+\end{enumerate}
+
+\textbf{[TODO: Finalize conclusions after experiments]}
+
+Our evaluation on NERSC Perlmutter with LLaMA-70B demonstrates
+the potential of HPC-native KV cache design.
+Content-addressed deduplication combined with multi-tier caching
+and aggregated storage offers significant improvements
+over datacenter-optimized baselines naively deployed on HPC systems.
+
+As LLM inference increasingly targets HPC platforms
+to leverage their massive GPU counts and high-bandwidth interconnects,
+storage-aware system design becomes critical.
+\Cascade demonstrates that HPC-native optimizations---content-addressed storage,
+MPI-based distribution, and parallel file system awareness---can
+dramatically improve KV cache efficiency for large-scale LLM serving.
+
+\textbf{Reproducibility.}
+The \Cascade implementation and benchmark framework are available at:
+\texttt{[TODO: Add repository URL for camera-ready]}

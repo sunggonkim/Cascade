@@ -1,0 +1,269 @@
+\section{Design}
+\label{sec:design}
+
+\Cascade is a content-addressed tiered KV cache storage system designed for HPC environments.
+Figure~\ref{fig:architecture} shows the overall architecture.
+We describe each component in detail.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.95\textwidth]{Figures/architecture.pdf}
+    \caption{\Cascade architecture. The system consists of four storage tiers (GPU HBM, Local DRAM, Remote DRAM via MPI, Lustre PFS),
+    content-addressed block management, and semantic-aware eviction with prefix protection.}
+    \label{fig:architecture}
+\end{figure*}
+
+\subsection{Content-Addressed Block Identification}
+
+The cornerstone of \Cascade is \textbf{content-addressed block IDs}.
+Unlike session-specific addressing in LMCache/Mooncake,
+\Cascade computes block IDs from the KV tensor content itself:
+
+\begin{equation}
+    \text{block\_id} = \text{SHA256}(\text{key\_data} \| \text{value\_data})[:32]
+\end{equation}
+
+This design provides several benefits:
+
+\textbf{Automatic deduplication:}
+When multiple sessions share identical system prompts,
+their KV cache blocks hash to the same block ID.
+The first session computes and stores the block;
+subsequent sessions find it already cached.
+
+\textbf{No coordination overhead:}
+Deduplication happens implicitly through hash collision.
+No explicit coordination protocol is needed to identify shared content.
+
+\textbf{Cross-node sharing:}
+Content-addressed IDs are globally meaningful.
+Any node can compute the same ID for the same content,
+enabling distributed cache lookup without central coordination.
+
+Implementation in \texttt{core.py}:
+\begin{verbatim}
+def compute_block_id(key_data, value_data):
+    hasher = hashlib.sha256()
+    hasher.update(key_data.tobytes())
+    hasher.update(value_data.tobytes())
+    return hasher.hexdigest()[:32]
+\end{verbatim}
+
+\subsection{Four-Tier Storage Hierarchy}
+
+\Cascade organizes KV cache storage into four tiers optimized for HPC:
+
+\textbf{Tier 1: GPU HBM (Hot Cache)}
+The hottest KV blocks reside in GPU HBM for immediate attention computation.
+\Cascade manages KV pages as fixed-size blocks (default: 256 tokens).
+Capacity per A100: 40GB minus model weights ($\sim$32GB available for cache).
+Bandwidth: 1,555 GB/s HBM2e.
+
+\textbf{Tier 2: Local DRAM via /dev/shm (Warm Cache)}
+Evicted blocks move to \texttt{/dev/shm}, a tmpfs backed by system DRAM.
+\begin{itemize}[leftmargin=*,nosep]
+    \item Capacity: $\sim$128GB per node (configurable)
+    \item Bandwidth: 204 GB/s DDR4-3200
+    \item Access: Memory-mapped files for zero-copy
+\end{itemize}
+
+\textbf{Tier 3: Remote DRAM via MPI (Distributed Cache)}
+Blocks not found locally are fetched from remote nodes via MPI.
+\begin{itemize}[leftmargin=*,nosep]
+    \item Aggregate capacity: 128GB $\times$ $N$ nodes
+    \item Bandwidth: 100 GB/s Slingshot-11 per node
+    \item Access: Point-to-point MPI transfers
+\end{itemize}
+A distributed hash table (DHT) maps block IDs to node locations.
+
+\textbf{Tier 4: Lustre PFS (Cold Cache)}
+Infrequently accessed blocks persist to Lustre.
+\begin{itemize}[leftmargin=*,nosep]
+    \item Capacity: Effectively unlimited (44 PB on Perlmutter)
+    \item Bandwidth: 7.8 TB/s aggregate read
+    \item Optimization: Aggregated files with striping
+\end{itemize}
+
+\subsection{Cascade Eviction Flow}
+
+When a new block arrives and the current tier is full,
+\Cascade cascades eviction down the hierarchy:
+
+\begin{algorithm}[t]
+\caption{\Cascade Put Operation}
+\label{alg:put}
+\begin{algorithmic}[1]
+\REQUIRE Block ID $b$, KV data $d$, is\_prefix flag $p$
+\IF{GPU.put($b$, $d$)}
+    \RETURN \texttt{success}
+\ENDIF
+\STATE // GPU full, evict LRU block
+\STATE $e_b, e_d \gets$ GPU.evict\_lru()
+\IF{$e_b$.is\_prefix OR $e_b$.ref\_count $> 1$}
+    \STATE SHM.put($e_b$, $e_d$) \COMMENT{Protect shared blocks}
+\ELSE
+    \STATE Lustre.put($e_b$, $e_d$) \COMMENT{Cold storage}
+\ENDIF
+\STATE GPU.put($b$, $d$)
+\RETURN \texttt{success}
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Semantic-aware eviction:}
+\Cascade distinguishes between prefix blocks (shared system prompts)
+and session-specific blocks (user queries, responses).
+Prefix blocks are preferentially kept in faster tiers:
+
+\begin{equation}
+    \text{Eviction Priority} = \begin{cases}
+        \text{Low} & \text{if is\_prefix} \lor \text{ref\_count} > 1 \\
+        \text{High} & \text{otherwise}
+    \end{cases}
+\end{equation}
+
+This ensures frequently-shared prefixes remain accessible,
+while ephemeral session data cascades to cold storage.
+
+\subsection{Lustre Optimization}
+
+To overcome Lustre's metadata overhead,
+\Cascade uses two key optimizations:
+
+\textbf{1. Aggregated file storage:}
+Instead of one file per block (LMCache approach),
+\Cascade aggregates multiple blocks into larger files:
+
+\begin{verbatim}
+agg_rank{rank:03d}_{file_id:06d}.bin
+\end{verbatim}
+
+Each file contains up to 256 blocks ($\sim$80MB for 256-token, 320KB blocks).
+Format per block:
+\begin{verbatim}
+[4B block_id_len][block_id][4B key_len][key_data]
+[4B value_len][value_data]
+\end{verbatim}
+
+An index file maps block IDs to (file\_id, offset):
+\begin{verbatim}
+index_rank{rank:03d}.pkl
+\end{verbatim}
+
+\textbf{2. Lustre striping configuration:}
+All aggregated files use optimized striping:
+\begin{verbatim}
+lfs setstripe -c 16 -S 4m <path>
+\end{verbatim}
+
+This distributes data across 16 OSTs with 4MB stripes,
+maximizing parallel I/O bandwidth.
+
+\textbf{3. Rank-specific files to avoid contention:}
+Each MPI rank writes to its own files,
+eliminating distributed lock contention.
+
+\subsection{MPI-Based Global Address Space}
+
+\Cascade uses MPI to create a global address space across nodes:
+
+\textbf{Distributed index:}
+Each node maintains a local index of blocks it owns.
+A lightweight DHT (consistent hashing on block ID) determines
+which node is the ``home'' for each block.
+
+\textbf{Remote lookup:}
+When a block is not found locally:
+\begin{enumerate}[leftmargin=*,nosep]
+    \item Hash block ID to determine home node
+    \item MPI request to home node
+    \item Home node checks local tiers (SHM, Lustre)
+    \item Data returned via MPI if found
+\end{enumerate}
+
+\textbf{MPI transfer implementation:}
+\Cascade uses Cray MPICH optimized for Slingshot-11.
+For point-to-point KV block transfers ($<$4MB),
+MPI achieves 10+ GB/s, matching or exceeding NCCL.
+
+\begin{algorithm}[t]
+\caption{\Cascade Get Operation}
+\label{alg:get}
+\begin{algorithmic}[1]
+\REQUIRE Block ID $b$
+\ENSURE KV tensors or \texttt{None}
+\STATE $d \gets$ GPU.get($b$)
+\IF{$d \neq$ \texttt{None}}
+    \RETURN $d$
+\ENDIF
+\STATE $d \gets$ SHM.get($b$)
+\IF{$d \neq$ \texttt{None}}
+    \STATE GPU.promote($b$, $d$)
+    \RETURN $d$
+\ENDIF
+\STATE $node \gets$ DHT.lookup($b$)
+\IF{$node \neq$ local\_rank}
+    \STATE $d \gets$ MPI.request($node$, $b$)
+    \IF{$d \neq$ \texttt{None}}
+        \STATE SHM.put($b$, $d$); GPU.promote($b$, $d$)
+        \RETURN $d$
+    \ENDIF
+\ENDIF
+\STATE $d \gets$ Lustre.get($b$)
+\IF{$d \neq$ \texttt{None}}
+    \STATE SHM.put($b$, $d$); GPU.promote($b$, $d$)
+    \RETURN $d$
+\ENDIF
+\RETURN \texttt{None} \COMMENT{Cache miss}
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{KV Block Format}
+
+Each KV block stores a fixed number of tokens (default: 256):
+
+\begin{verbatim}
+@dataclass
+class KVBlock:
+    block_id: str      # Content hash (32 hex chars)
+    num_tokens: int    # Tokens in block (256)
+    num_layers: int    # Model layers (80 for LLaMA-70B)
+    num_kv_heads: int  # GQA heads (8 for LLaMA-70B)
+    head_dim: int      # Head dimension (128)
+    key_data: ndarray  # [tokens, layers, heads, dim]
+    value_data: ndarray
+    is_prefix: bool    # Shared prefix flag
+    ref_count: int     # Deduplication reference count
+\end{verbatim}
+
+For LLaMA-70B with 256 tokens:
+\begin{equation}
+    \text{Block size} = 256 \times 320\text{KB} = 82\text{MB}
+\end{equation}
+
+\subsection{Integration Points}
+
+\Cascade provides adapter interfaces for integration:
+
+\textbf{vLLM integration:}
+CascadeAdapter implements the StorageAdapter interface,
+intercepting vLLM's KV cache allocation and retrieval.
+
+\textbf{Benchmark framework:}
+A unified benchmark runner supports multiple backends:
+\begin{itemize}[leftmargin=*,nosep]
+    \item \texttt{cascade\_adapter.py}: \Cascade (our system)
+    \item \texttt{lmcache\_adapter.py}: LMCache baseline
+    \item \texttt{hdf5\_adapter.py}: HDF5 backend
+    \item \texttt{pdc\_adapter.py}: Proactive Data Containers
+    \item \texttt{redis\_adapter.py}: Redis for Lustre
+\end{itemize}
+
+All adapters implement a common interface:
+\begin{verbatim}
+class StorageAdapter(ABC):
+    def initialize(self) -> bool
+    def put(block_id, key_data, value_data) -> bool
+    def get(block_id) -> Optional[tuple]
+    def contains(block_id) -> bool
+    def clear() -> None
+\end{verbatim}
