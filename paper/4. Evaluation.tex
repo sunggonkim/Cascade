@@ -2,7 +2,8 @@
 \label{sec:evaluation}
 
 We evaluate \Cascade on NERSC's Perlmutter supercomputer, comparing against four state-of-the-art KV cache storage systems.
-Our experiments demonstrate that \Cascade achieves \textbf{the highest throughput in both write and read operations}, enabling efficient KV cache storage for HPC-scale LLM inference.
+Our experiments demonstrate that \Cascade achieves \textbf{9.4$\times$ speedup through tiered caching} when hot data fits in shared memory,
+while maintaining \textbf{competitive performance on cold Lustre reads}, enabling efficient KV cache storage for HPC-scale LLM inference.
 
 \subsection{Experimental Setup}
 
@@ -289,6 +290,50 @@ LMCache & 12.44 & 15.72 & Per-file (500 files/rank) \\
 Even when \textbf{both systems use only Lustre} (no SHM advantage),
 \Cascade's aggregated file + striping achieves \textbf{1.53$\times$ faster cold read}
 (24.02 vs 15.72 GB/s) by reducing metadata overhead and enabling sequential I/O patterns.
+\end{tcolorbox}
+
+%==============================================================================
+\subsection{All 5 Systems Comparison}
+\label{sec:all5-comparison}
+%==============================================================================
+
+To provide comprehensive evaluation, we compare all five storage systems
+under identical conditions: Lustre cold read with \texttt{posix\_fadvise(DONTNEED)} (Job 48415662).
+
+\begin{table}[t]
+\centering
+\caption{\textbf{All 5 systems: Lustre-only comparison} (4 nodes, 16 ranks, 500GB data, cold read).
+On pure Lustre storage without tiering, all systems achieve similar throughput.}
+\label{tab:all5-comparison}
+\begin{tabular}{l|rr|r|l}
+\toprule
+\textbf{System} & \textbf{Write} & \textbf{Read} & \textbf{vs LMCache} & \textbf{Storage Method} \\
+ & \textbf{(GB/s)} & \textbf{(GB/s)} & & \\
+\midrule
+PDC & 6.75 & 17.74 & 1.02$\times$ & Per-file + fsync \\
+LMCache & 6.72 & 17.46 & 1.00$\times$ & Per-file (100/rank) \\
+Redis & 6.56 & 17.29 & 0.99$\times$ & Per-file batch \\
+\Cascade & 6.00 & 16.92 & 0.97$\times$ & Aggregated + stripe \\
+HDF5 & 6.85 & 14.39 & 0.82$\times$ & HDF5 single file \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key Finding: Lustre-Only is Not the Differentiator.}
+When all systems use \emph{only} Lustre storage (no memory tiering),
+performance converges to Lustre's aggregate bandwidth ($\sim$17 GB/s).
+This confirms that \textbf{\Cascade's value comes from tiered caching, not storage format}.
+
+\begin{enumerate}[leftmargin=*,nosep]
+    \item \textbf{All systems converge}: Per-file vs aggregated file difference is minimal on Lustre
+    \item \textbf{HDF5 slower}: Metadata overhead for dataset access
+    \item \textbf{Key insight}: The real differentiation is \textbf{tiering}---keeping hot data in SHM (§\ref{sec:tiered-overflow})
+\end{enumerate}
+
+\begin{tcolorbox}[colback=blue!5,colframe=blue!50!black,title=Key Insight: Tiering is the Differentiator]
+\textbf{On pure Lustre, all systems achieve similar throughput ($\sim$17 GB/s).}
+\Cascade's \textbf{9.4$\times$ advantage} comes from keeping hot prefix tokens in shared memory (160 GB/s),
+not from storage format differences.
 \end{tcolorbox}
 
 %==============================================================================

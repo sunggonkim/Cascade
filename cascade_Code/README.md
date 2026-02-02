@@ -272,6 +272,21 @@ When **both systems use only Lustre** (no SHM advantage), Cascade still wins:
 
 **Why?** Aggregated file + Lustre striping (`-c 8 -S 4m`) reduces metadata overhead and enables sequential I/O.
 
+### All 5 Systems Comparison - Large Scale (Job 48415672)
+
+Fair comparison on **500GB data** (exceeds page cache), Lustre cold read:
+
+| System | Write (GB/s) | Read (GB/s) | vs LMCache | Method |
+|--------|-------------|-------------|------------|--------|
+| PDC | 6.75 | **17.74** | 1.02× | Per-file + fsync |
+| LMCache | 6.72 | 17.46 | 1.00× | Per-file (100/rank) |
+| Redis | 6.56 | 17.29 | 0.99× | Per-file batch |
+| Cascade | 6.00 | 16.92 | 0.97× | Aggregated + stripe |
+| HDF5 | 6.85 | 14.39 | 0.82× | HDF5 single file |
+
+**Key Finding:** On **pure Lustre** (no tiering), all systems converge to ~17 GB/s.
+**Cascade's 9.4× advantage comes from tiered caching (SHM), not storage format.**
+
 ### Per-Tier Bandwidth
 
 | Tier | Read | Write | Notes |
