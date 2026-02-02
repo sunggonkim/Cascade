@@ -261,9 +261,16 @@ When data exceeds SHM capacity, Cascade gracefully spills to Lustre.
 | 75% overflow | 75% | 22.3 GB/s | 17.4 GB/s | **1.28×** |
 | 90% overflow | 90% | 19.0 GB/s | 17.4 GB/s | 1.09× |
 
-**Key Insight**: LMCache warm reads (145-200 GB/s) benefit from OS page cache.
-In production (after restart, cache eviction), cold reads show true storage performance.
-Cascade's mmap SHM provides **9.41× speedup** over Lustre cold read.
+### Fair Lustre-to-Lustre Comparison (Job 48415577)
+
+When **both systems use only Lustre** (no SHM advantage), Cascade still wins:
+
+| System | Write | Read | **Speedup** |
+|--------|-------|------|-------------|
+| LMCache (per-file) | 12.44 GB/s | 15.72 GB/s | - |
+| **Cascade (aggregated)** | 12.71 GB/s | **24.02 GB/s** | **1.53×** |
+
+**Why?** Aggregated file + Lustre striping (`-c 8 -S 4m`) reduces metadata overhead and enables sequential I/O.
 
 ### Per-Tier Bandwidth
 

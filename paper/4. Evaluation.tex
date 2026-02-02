@@ -250,6 +250,48 @@ provides substantial acceleration even with high overflow rates.
 \end{tcolorbox}
 
 %==============================================================================
+\subsection{Fair Lustre-to-Lustre Comparison}
+\label{sec:fair-lustre}
+%==============================================================================
+
+To ensure a fair comparison when both systems use only Lustre storage (no SHM advantage),
+we evaluate \Cascade's \textbf{aggregated file with Lustre striping} against 
+LMCache's \textbf{per-file storage} approach on 78GB of data (Job 48415577).
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Fair Lustre comparison} (4 nodes, 16 ranks, 78GB total data).
+Both systems use Lustre cold read with \texttt{posix\_fadvise(DONTNEED)}.}
+\label{tab:fair-lustre}
+\begin{tabular}{l|rr|l}
+\toprule
+\textbf{System} & \textbf{Write (GB/s)} & \textbf{Read (GB/s)} & \textbf{Storage Method} \\
+\midrule
+LMCache & 12.44 & 15.72 & Per-file (500 files/rank) \\
+\rowcolor{green!15}
+\textbf{\Cascade} & \textbf{12.71} & \textbf{24.02} & Aggregated + stripe (-c 8) \\
+\midrule
+\textbf{Speedup} & 1.02$\times$ & \textbf{1.53$\times$} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Why Aggregated Files Are Faster.}
+\Cascade's aggregated file approach provides \textbf{1.53$\times$ faster cold read} due to:
+\begin{enumerate}[leftmargin=*,nosep]
+    \item \textbf{Reduced metadata overhead}: 1 file vs 500 files per rank = 500$\times$ fewer \texttt{open()}/\texttt{stat()} calls
+    \item \textbf{Sequential I/O}: Single file with sequential \texttt{seek()} + \texttt{read()} vs random file access
+    \item \textbf{Lustre striping}: \texttt{lfs setstripe -c 8 -S 4m} spreads data across 8 OSTs for parallel read
+    \item \textbf{Prefetch efficiency}: Large sequential file enables better Lustre read-ahead
+\end{enumerate}
+
+\begin{tcolorbox}[colback=green!5,colframe=green!50!black,title=Fair Comparison Result]
+Even when \textbf{both systems use only Lustre} (no SHM advantage),
+\Cascade's aggregated file + striping achieves \textbf{1.53$\times$ faster cold read}
+(24.02 vs 15.72 GB/s) by reducing metadata overhead and enabling sequential I/O patterns.
+\end{tcolorbox}
+
+%==============================================================================
 \subsection{Throughput Breakdown}
 %==============================================================================
 
