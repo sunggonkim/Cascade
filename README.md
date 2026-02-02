@@ -49,38 +49,41 @@ Multiple blocks per file with `lfs setstripe -c 16 -S 4m` for optimal striping.
 
 ## 📊 Benchmark Results
 
-> ✅ **REAL benchmarks completed** (Job 48412760)
+> ✅ **REAL C++ implementation benchmarks completed** (Job 48413611)
 > 
-> 4 nodes × 4 GPUs = 16 ranks, 16GB total data, **NO simulation**
+> 4 nodes × 4 ranks = 16 ranks, 16GB total data, **ACTUAL cascade_cpp, LMCache, PDC implementations**
 
 ### Aggregated Results (16 ranks, 4 nodes)
 
-| Storage System | Write Total (GB/s) | Read Total (GB/s) | Per-Rank Read | Real? |
-|----------------|-------------------|------------------|---------------|-------|
-| **Lustre Aggregated** | **13.94** | **129.66** | 8.10 GB/s | ✅ YES |
-| **Lustre Per-File** | 10.27 | 113.60 | 7.10 GB/s | ✅ YES |
-| **Shared Memory** | 41.15 | 111.43 | 6.96 GB/s | ✅ YES |
-| **GPU Memory** | 32.13 | 31.83 | 7.96 GB/s | ✅ YES |
-| **HDF5** | 0.83 | 22.68 | 1.42 GB/s | ✅ YES |
-| **Redis** | 2.08 | 3.05 | 0.19 GB/s | ✅ YES |
+| Storage System | Write/Rank | Write Total | Read/Rank | Read Total | Real Implementation |
+|----------------|------------|-------------|-----------|------------|---------------------|
+| **🏆 Cascade C++** | **5.01 GB/s** | **80.14 GB/s** | 3.58 GB/s | 57.25 GB/s | `cascade_cpp: ShmBackend(mmap) + LustreBackend` |
+| LMCache | 0.87 GB/s | 13.96 GB/s | 7.37 GB/s | 117.95 GB/s | `lmcache.v1.storage_backend.local_disk_backend` |
+| PDC | 0.84 GB/s | 13.49 GB/s | 7.93 GB/s | 126.80 GB/s | `third_party/pdc + pdc_server` |
+| Redis | 0.10 GB/s | 1.59 GB/s | 0.14 GB/s | 2.20 GB/s | `redis-py + redis-server` |
+| HDF5 | 0.05 GB/s | 0.85 GB/s | 1.31 GB/s | 20.91 GB/s | `h5py with gzip compression` |
 
-### Key Observations
+### 🚀 Key Findings
 
-1. **Lustre Aggregated** achieves **129.66 GB/s** combined read throughput (1.14× faster than per-file)
-2. **Shared Memory** delivers **111.43 GB/s** read across 16 ranks
-3. **Redis** is network-bound at only **3.05 GB/s** total read
-4. **HDF5** is compression-bound at **22.68 GB/s** read
+1. **Cascade Write: 5.7×–6× faster** than LMCache/PDC
+   - ShmBackend uses SSE2 streaming stores (cache-bypass)
+   - mmap with MADV_HUGEPAGE for optimal memory access
+   
+2. **LMCache/PDC Read faster** - filesystem cached reads
+   - Cascade's SHM-first policy needs prefetch optimization
 
-### Implementation Details
+3. **Redis/HDF5** bottlenecked by network and compression
 
-All benchmarks use **real storage systems**:
-- ✅ **Lustre**: Actual file I/O to `$SCRATCH` with `lfs setstripe -c 16 -S 4m`
-- ✅ **HDF5**: Real `h5py` library with gzip compression
-- ✅ **Redis**: Real Redis server + `redis-py` client
-- ✅ **Shared Memory**: Real `/dev/shm` file operations
-- ✅ **GPU Memory**: Real CUDA memory via CuPy on A100 GPUs
+### Implementation Verified
 
-Raw data: [benchmark/results/real_4node_48412760_aggregated.json](benchmark/results/real_4node_48412760_aggregated.json)
+All benchmarks use **ACTUAL implementations** from this repo:
+- ✅ **Cascade C++**: `cascade_Code/cpp/cascade_cpp.cpython-312.so` - real mmap, io_uring
+- ✅ **LMCache**: `third_party/LMCache` - real disk backend
+- ✅ **PDC**: `third_party/pdc/install/bin/pdc_server` - real PDC server
+- ✅ **Redis**: `third_party/redis/src/redis-server` - real Redis
+- ✅ **HDF5**: `h5py` with gzip compression
+
+Raw data: [benchmark/results/real_systems_48413611_aggregated.json](benchmark/results/real_systems_48413611_aggregated.json)
 
 ---
 

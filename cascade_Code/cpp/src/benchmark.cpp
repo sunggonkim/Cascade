@@ -25,8 +25,8 @@ struct BenchConfig {
     size_t block_size = 128 * 1024;        // 128KB blocks
     size_t num_blocks = 1000;               // Number of blocks
     size_t num_iterations = 3;              // Iterations per test
-    size_t gpu_capacity = 4ULL * 1024 * 1024 * 1024;  // 4GB
-    size_t shm_capacity = 8ULL * 1024 * 1024 * 1024;  // 8GB
+    size_t gpu_capacity = 0;                // 0 = auto (data size + 10%)
+    size_t shm_capacity = 0;                // 0 = auto (data size + 10%)
     std::string lustre_path = "/tmp/cascade_bench";
     bool test_gpu = true;
     bool test_shm = true;
@@ -133,6 +133,18 @@ int main(int argc, char** argv) {
         ids[i] = compute_block_id(blocks[i].data(), blocks[i].size());
     }
     std::cout << " done\n\n";
+    
+    // Auto-size capacities based on data size (add 20% margin)
+    size_t total_data_size = config.block_size * config.num_blocks;
+    if (config.gpu_capacity == 0) {
+        config.gpu_capacity = (size_t)(total_data_size * 1.2);
+    }
+    if (config.shm_capacity == 0) {
+        config.shm_capacity = (size_t)(total_data_size * 1.2);
+    }
+    
+    std::cout << "  Actual GPU capacity: " << config.gpu_capacity / (1024*1024) << " MB\n";
+    std::cout << "  Actual SHM capacity: " << config.shm_capacity / (1024*1024) << " MB\n\n";
     
     // Output buffers
     std::vector<std::vector<uint8_t>> out_blocks(config.num_blocks,
