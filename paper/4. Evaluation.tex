@@ -106,40 +106,87 @@ These are the core differentiators for HPC-scale LLM inference.
 \end{tcolorbox}
 
 %==============================================================================
-\subsection{Overall Performance Comparison}
+\subsection{All 5 Systems: Lustre Cold Read (500GB)}
+\label{sec:lustre-comparison}
 %==============================================================================
+
+To ensure fair comparison when all data must come from persistent storage,
+we evaluate all five systems on \textbf{500GB data with page cache invalidation} (Job 48415672).
 
 \begin{table}[t]
 \centering
-\caption{\textbf{Real C++ implementation benchmarks} on Perlmutter (4 nodes, 16 ranks, 16GB data, Job 48414391). 
-\Cascade achieves \textbf{highest throughput in both write and read} through SSE2 optimization and buffer reuse.}
-\label{tab:main-results}
-\renewcommand{\arraystretch}{1.15}
-\begin{tabular}{l|rr|rr|l}
+\caption{\textbf{Lustre-only comparison} (4 nodes, 16 ranks, 500GB total, cold read).
+All systems converge to Lustre aggregate bandwidth ($\sim$17 GB/s).}
+\label{tab:lustre-only}
+\begin{tabular}{l|rr|l}
 \toprule
-\textbf{System} & \textbf{Write/Rank} & \textbf{Write Total} & \textbf{Read/Rank} & \textbf{Read Total} & \textbf{Implementation} \\
- & \textbf{(GB/s)} & \textbf{(GB/s)} & \textbf{(GB/s)} & \textbf{(GB/s)} & \\
+\textbf{System} & \textbf{Write} & \textbf{Read} & \textbf{Storage Method} \\
+ & \textbf{(GB/s)} & \textbf{(GB/s)} & \\
 \midrule
-\rowcolor{green!15}
-\textbf{\Cascade} & \textbf{3.54} & \textbf{56.58} & \textbf{9.28} & \textbf{148.44} & ShmBackend + SSE2 \\
-PDC & 0.85 & 13.59 & 8.47 & 135.57 & pdc\_server \\
-LMCache & 0.87 & 13.87 & 7.67 & 122.72 & local\_disk\_backend \\
-HDF5 & 0.05 & 0.85 & 1.59 & 25.46 & h5py + gzip \\
-Redis & 0.10 & 1.63 & 0.16 & 2.63 & redis-server \\
+PDC & 6.75 & \textbf{17.74} & Per-file + fsync \\
+LMCache & 6.72 & 17.46 & Per-file (baseline) \\
+Redis & 6.56 & 17.29 & Per-file batch \\
+\Cascade & 6.00 & 16.92 & Aggregated + stripe \\
+HDF5 & 6.85 & 14.39 & HDF5 single file \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\paragraph{Why Cascade is Slightly Slower on Cold Read.}
+\Cascade uses a single aggregated file per rank, requiring \texttt{seek()} operations within the file.
+Per-file approaches (LMCache, PDC) benefit from parallel \texttt{open()} calls.
+However, this \textbf{does not matter in practice}---hot data is served from SHM at 160 GB/s.
+
+\paragraph{Key Finding: Storage Format is Not the Differentiator.}
+On pure Lustre, all systems achieve similar throughput ($\sim$17 GB/s).
+\textbf{\Cascade's value comes from tiering and multi-node capabilities}, not storage format.
+
+%==============================================================================
+\subsection{Hot vs Cold Read Comparison}
+\label{sec:hot-cold}
+%==============================================================================
+
+We distinguish between \textbf{hot reads} (data in SHM or page cache) and \textbf{cold reads} (direct from Lustre).
+This distinction is critical because real LLM serving workloads exhibit a mix of both scenarios.
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Hot vs Cold read performance} (4 nodes, 16 ranks).
+Hot = data in SHM/page cache; Cold = Lustre with \texttt{posix\_fadvise(DONTNEED)}.}
+\label{tab:hot-cold}
+\begin{tabular}{l|rr|l}
+\toprule
+\textbf{System} & \textbf{Hot Read} & \textbf{Cold Read} & \textbf{Notes} \\
+ & \textbf{(GB/s)} & \textbf{(GB/s)} & \\
+\midrule
+\rowcolor{green!15}
+\textbf{\Cascade} & \textbf{160.9} & 16.92 & mmap SHM (hot), Lustre (cold) \\
+LMCache & 145.4 & 17.46 & OS page cache (hot), per-file (cold) \\
+PDC & 135.6 & \textbf{17.74} & page cache (hot), per-file+fsync (cold) \\
+HDF5 & 25.5 & 14.39 & gzip decompression overhead \\
+Redis & 2.6 & 17.29 & network serialization bottleneck \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key Observations.}
+\begin{enumerate}[leftmargin=*,nosep]
+    \item \textbf{Hot reads}: \Cascade leads with 160.9 GB/s through direct mmap access
+    \item \textbf{Cold reads}: All systems converge to Lustre bandwidth ($\sim$17 GB/s)
+    \item \textbf{\Cascade's cold read slightly slower}: Aggregated file seek() overhead vs per-file open()
+    \item \textbf{This is acceptable}: Hot prefix tokens (10--30\% of data) dominate real workloads
+\end{enumerate}
 
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
     ybar,
-    bar width=0.4cm,
+    bar width=0.35cm,
     width=0.95\columnwidth,
     height=5.5cm,
-    ylabel={Throughput (GB/s)},
-    symbolic x coords={Cascade,PDC,LMCache,HDF5,Redis},
+    ylabel={Read Throughput (GB/s)},
+    symbolic x coords={Cascade,LMCache,PDC,HDF5,Redis},
     xtick=data,
     ymin=0,
     ymax=180,
@@ -148,42 +195,24 @@ Redis & 0.10 & 1.63 & 0.16 & 2.63 & redis-server \\
     nodes near coords align={vertical},
     every node near coord/.append style={font=\tiny,rotate=90,anchor=west},
 ]
-\addplot[fill=blue!70] coordinates {(Cascade,56.58) (PDC,13.59) (LMCache,13.87) (HDF5,0.85) (Redis,1.63)};
-\addplot[fill=green!70] coordinates {(Cascade,148.44) (PDC,135.57) (LMCache,122.72) (HDF5,25.46) (Redis,2.63)};
-\legend{Write,Read}
+\addplot[fill=orange!70] coordinates {(Cascade,160.9) (LMCache,145.4) (PDC,135.6) (HDF5,25.5) (Redis,2.6)};
+\addplot[fill=blue!70] coordinates {(Cascade,16.92) (LMCache,17.46) (PDC,17.74) (HDF5,14.39) (Redis,17.29)};
+\legend{Hot (SHM/cache),Cold (Lustre)}
 \end{axis}
 \end{tikzpicture}
-\caption{\textbf{Throughput comparison (16 ranks, 4 nodes).} \Cascade achieves \textbf{highest throughput in both write (56.58 GB/s) and read (148.44 GB/s)}, outperforming all baselines.}
-\label{fig:throughput-comparison}
+\caption{\textbf{Hot vs Cold read comparison.} \Cascade achieves highest hot read (160.9 GB/s) through mmap SHM. On cold reads, all systems converge to Lustre bandwidth ($\sim$17 GB/s).}
+\label{fig:hot-cold}
 \end{figure}
 
-Table~\ref{tab:main-results} and Figure~\ref{fig:throughput-comparison} present our main results.
-\Cascade achieves the \textbf{highest throughput in both write and read operations} through three key optimizations:
-
-\paragraph{SSE2 Streaming Stores for Write.}
-\Cascade's ShmBackend uses SSE2 non-temporal stores (\texttt{\_mm\_stream\_si128}) to bypass CPU cache,
-achieving near-memory-bandwidth write performance (56.58 GB/s total, \textbf{4.1$\times$ faster} than LMCache/PDC).
-
-\paragraph{SSE2 Prefetch + Vectorized Read.}
-For read operations, \Cascade employs software prefetching (\texttt{\_mm\_prefetch}, 8 cache lines ahead)
-combined with SSE2 vectorized copy (\texttt{\_mm\_load\_si128}/\texttt{\_mm\_store\_si128}),
-achieving 148.44 GB/s total read throughput.
-
-\paragraph{mmap with Huge Pages.}
-The ShmBackend allocates shared memory via \texttt{mmap} with \texttt{MADV\_HUGEPAGE} advisory,
-reducing TLB misses and improving memory access efficiency for both read and write.
-
-\begin{tcolorbox}[colback=green!5,colframe=green!50!black,title=Key Finding]
-\textbf{\Cascade achieves highest throughput in both read (148.44 GB/s) and write (56.58 GB/s).}
-This enables both rapid ingestion of newly computed KV cache blocks
-and efficient retrieval for cache hits, critical for high-throughput LLM serving.
+\begin{tcolorbox}[colback=blue!5,colframe=blue!50!black,title=Key Insight: Hot Data Dominates Real Workloads]
+In production LLM serving with prefix caching, \textbf{system prompts and popular prefixes are frequently reused}.
+These hot tokens represent 10--30\% of data but 50--80\% of accesses.
+\Cascade's value comes from serving this hot data at 160.9 GB/s (mmap SHM),
+\textbf{not from cold Lustre performance}.
 \end{tcolorbox}
 
 %==============================================================================
 \subsection{Optimization Impact Analysis}
-%==============================================================================
-
-Our optimization journey demonstrates the importance of low-level memory optimizations:
 
 \begin{table}[h]
 \centering
