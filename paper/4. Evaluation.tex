@@ -192,55 +192,51 @@ This is why larger-scale experiments (§\ref{sec:tiered-overflow}) are critical 
 \label{sec:tiered-overflow}
 %==============================================================================
 
-To evaluate \Cascade's tiered architecture more comprehensively,
+To evaluate \Cascade's tiered architecture comprehensively,
 we conduct experiments where data volume \emph{exceeds} the SHM tier capacity,
-forcing spillover to Lustre.
+forcing spillover to Lustre (Job 48414521).
 
 \begin{table}[t]
 \centering
-\caption{Tiered overflow benchmark scenarios (per rank).}
-\label{tab:overflow-scenarios}
-\begin{tabular}{l|r|r|r|r}
+\caption{Tiered overflow benchmark results (4 nodes, 16 ranks). 
+Cascade's advantage diminishes as overflow increases, converging with LMCache at 90\% overflow.}
+\label{tab:overflow-results}
+\begin{tabular}{l|r|r|rr|rr}
 \toprule
-\textbf{Scenario} & \textbf{Data} & \textbf{SHM Cap} & \textbf{Overflow} & \textbf{Description} \\
+\textbf{Scenario} & \textbf{Data/Rank} & \textbf{Overflow} & \multicolumn{2}{c|}{\textbf{\Cascade (GB/s)}} & \multicolumn{2}{c}{\textbf{LMCache (GB/s)}} \\
+ & & & Write & Read & Write & Read \\
 \midrule
-All-fit & 500MB & 2GB & 0\% & Pure memory performance \\
-75\% overflow & 2GB & 500MB & 75\% & Moderate spillover \\
-95\% overflow & 5GB & 256MB & 95\% & Extreme spillover \\
+All-fit (0\%) & 200MB & 0\% & \textbf{236} & \textbf{910*} & 14.8 & 111.2 \\
+50\% overflow & 400MB & 50\% & \textbf{28.3} & \textbf{247.5} & 14.1 & 137.8 \\
+90\% overflow & 1000MB & 90\% & 15.5 & 158.2 & 13.9 & 156.6 \\
 \bottomrule
 \end{tabular}
+\begin{tablenotes}
+\small
+\item[*] Extreme throughput due to small data size and timing precision limits.
+\end{tablenotes}
 \end{table}
 
-In the overflow scenarios, \Cascade's advantage comes from:
+\paragraph{Key Observations.}
 \begin{enumerate}[leftmargin=*,nosep]
-    \item \textbf{Hot data in SHM}: Frequently accessed blocks remain in memory
-    \item \textbf{Cold data on Lustre}: Less-accessed blocks spill to disk
-    \item \textbf{Weighted throughput}: Effective bandwidth is weighted average of tiers
+    \item \textbf{0\% overflow}: \Cascade achieves extreme throughput when all data fits in SHM.
+    \item \textbf{50\% overflow}: \Cascade maintains 1.8$\times$ advantage (247.5 vs 137.8 GB/s read).
+          Half the data is served from SHM at memory speed.
+    \item \textbf{90\% overflow}: \textbf{Cascade and LMCache converge} (158 vs 157 GB/s).
+          When 90\% of data goes to Lustre, the SHM tier's impact is minimal.
 \end{enumerate}
 
-The effective throughput model is:
-\begin{equation}
-    BW_{\text{effective}} = f_{\text{shm}} \cdot BW_{\text{shm}} + (1 - f_{\text{shm}}) \cdot BW_{\text{lustre}}
-\end{equation}
-where $f_{\text{shm}}$ is the fraction of data served from SHM.
-
-For example, with 25\% in SHM and 75\% on Lustre:
+This demonstrates that \Cascade's tiered architecture is most beneficial when:
 \begin{itemize}[leftmargin=*,nosep]
-    \item \Cascade: $0.25 \times 148 + 0.75 \times 2 = 38.5$ GB/s effective
-    \item LMCache (all Lustre): $1.0 \times 2 = 2$ GB/s (cold read)
+    \item Working set fits in SHM (100\% benefit)
+    \item Hot/cold access pattern with hot data in SHM (partial benefit)
 \end{itemize}
 
-This demonstrates \Cascade's \textbf{tiered advantage}: even with 75\% overflow,
-the SHM tier provides a 19$\times$ speedup over pure-Lustre solutions for hot data.
-
-\begin{tcolorbox}[colback=blue!5,colframe=blue!50!black,title=Insight: Tiered Storage Value]
-\Cascade's tiered architecture provides graceful degradation:
-\begin{itemize}[nosep]
-    \item \textbf{0\% overflow}: 148 GB/s (full memory speed)
-    \item \textbf{50\% overflow}: 75 GB/s (still 37$\times$ faster than cold Lustre)
-    \item \textbf{75\% overflow}: 38.5 GB/s (19$\times$ faster)
-\end{itemize}
-In contrast, single-tier systems like LMCache fall to Lustre speed immediately when data exceeds page cache.
+\begin{tcolorbox}[colback=blue!5,colframe=blue!50!black,title=Insight: When Does Tiering Help?]
+\Cascade's tiered architecture provides significant speedup when $\geq$50\% of data fits in SHM.
+Beyond 90\% overflow, Lustre becomes the bottleneck and all systems converge.
+\textbf{For LLM serving with prefix caching, the hot prefix tokens (typically 10--30\% of KV cache)
+can remain in SHM, providing substantial acceleration.}
 \end{tcolorbox}
 
 %==============================================================================
