@@ -83,31 +83,34 @@
 
 ---
 
-## 📊 GPU VRAM 기반 5-System Benchmark (Job 48443353)
+## 📊 Tiered KV Cache 5-System Benchmark (Job 48443467)
 
-**환경**: A100-SXM4-40GB, 512MB 블록, 10 반복  
-**측정**: 데이터가 GPU VRAM에서 시작 → 각 시스템 저장 → GPU VRAM으로 로드
+**동작 방식**: 모든 시스템이 동일한 VRAM 캐시 레이어 사용
+- **VRAM Hit** → GPU에서 직접 반환 (모든 시스템 동일)
+- **VRAM Miss** → 각 시스템의 백엔드에서 가져옴 (여기서 차이 발생)
+
+**환경**: A100-SXM4-40GB, 512MB 블록 × 10개, 50회 랜덤 접근, VRAM 캐시 5블록 (36% hit rate)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                    GPU VRAM 기반 5-System Benchmark (GB/s)                   │
+│               Tiered KV Cache Performance (VRAM + Backend)                   │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ System       │ Write (GPU→Storage) │ Read (Storage→GPU) │ Data Path         │
-├──────────────┼─────────────────────┼────────────────────┼───────────────────┤
-│ vLLM-GPU     │              649.78 │             654.13 │ GPU→GPU (D2D)     │
-│ Cascade-C++  │                1.58 │               6.42 │ GPU→SHM→GPU       │
-│ LMCache      │                1.35 │               4.00 │ GPU→File→GPU      │
-│ HDF5         │                1.95 │               3.37 │ GPU→HDF5→GPU      │
-│ PDC          │                1.59 │               3.18 │ GPU→File→GPU      │
+│ System       │ Avg Throughput │ Hit Rate │ Backend                          │
+├──────────────┼────────────────┼──────────┼──────────────────────────────────┤
+│ Cascade-C++  │     41.64 GB/s │    36.0% │ SHM (pinned memory + mmap)       │
+│ LMCache      │     22.55 GB/s │    36.0% │ CPU tensor + disk                │
+│ vLLM-GPU     │      6.60 GB/s │    36.0% │ Disk swap (torch.save/load)      │
+│ PDC          │      4.50 GB/s │    36.0% │ File container                   │
+│ HDF5         │      3.30 GB/s │    36.0% │ HDF5 file                        │
 └──────────────────────────────────────────────────────────────────────────────┘
 
-READ Performance (Storage → GPU VRAM):
+Performance Comparison:
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ vLLM-GPU     ██████████████████████████████████████████████████  654.13     │
-│ Cascade-C++  ▌                                                     6.42     │
-│ LMCache      ▏                                                     4.00     │
-│ HDF5         ▏                                                     3.37     │
-│ PDC          ▏                                                     3.18     │
+│ Cascade-C++  ██████████████████████████████████████████████████    41.64    │
+│ LMCache      ███████████████████████████                           22.55    │
+│ vLLM-GPU     ████████                                               6.60    │
+│ PDC          █████                                                  4.50    │
+│ HDF5         ████                                                   3.30    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -115,11 +118,11 @@ READ Performance (Storage → GPU VRAM):
 
 | 비교 | 성능 차이 | 의미 |
 |------|-----------|------|
-| **vLLM (GPU D2D)** vs Cascade | **102×** | 데이터가 GPU에 있으면 압도적 |
-| **Cascade (SHM)** vs LMCache | **1.6×** | SHM > 파일 기반 |
-| **Cascade (SHM)** vs PDC | **2.0×** | SHM > 파일 기반 |
+| **Cascade vs LMCache** | **1.85×** | SHM 백엔드가 CPU tensor+disk보다 빠름 |
+| **Cascade vs vLLM** | **6.3×** | SHM이 disk swap보다 훨씬 빠름 |
+| **Cascade vs HDF5** | **12.6×** | SHM이 HDF5 file보다 훨씬 빠름 |
 
-> **결론**: Hot 데이터는 GPU에 유지 (vLLM 방식), Warm 데이터는 SHM으로 (Cascade 방식)
+> **결론**: 동일한 VRAM Hit Rate에서 **Cascade의 SHM 백엔드가 가장 빠름**
 
 ---
 
