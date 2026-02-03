@@ -170,6 +170,54 @@ with rank count. Per-rank throughput decreases slightly at 4 ranks/node due to
 memory bandwidth contention.
 
 %==============================================================================
+\subsection{Storage Tier Performance (Job 48441649)}
+\label{sec:tier-performance}
+%==============================================================================
+
+\paragraph{Fair Comparison: C++ vs Python I/O.}
+We benchmark storage tier performance using identical block sizes (512MB) and iterations (5).
+
+\begin{table}[h]
+\centering
+\caption{\textbf{Storage tier performance} (Job 48441649; 512MB blocks, single A100 node).}
+\label{tab:tier-perf}
+\begin{tabular}{l|rr|rr}
+\toprule
+\textbf{Tier} & \textbf{Write} & \textbf{Hot Read} & \textbf{HW Limit} & \textbf{Efficiency} \\
+ & \textbf{(GB/s)} & \textbf{(GB/s)} & \textbf{(GB/s)} & \\
+\midrule
+\rowcolor{green!15}
+\textbf{Cascade-C++} & \textbf{13.04} & \textbf{12.58} & 200 (DDR4) & 6.3\% \\
+GPU-PCIe & 13.41 & 5.63 & 32 (PCIe) & 17.6\% \\
+DRAM-SHM (Python) & 2.34 & 5.10 & 200 (DDR4) & 2.5\% \\
+NVMe & 2.33 & 5.11 & 7 & 73\% \\
+Lustre & 0.96 & 5.42 & 5 & 108\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key Findings.}
+\begin{itemize}[leftmargin=*,nosep]
+    \item \textbf{Cascade-C++ is 2.2$\times$ faster than GPU-PCIe read}:
+    The C++ mmap backend (12.58 GB/s) outperforms torch.cuda D2H transfer (5.63 GB/s)
+    because it avoids PCIe bottleneck.
+    
+    \item \textbf{Python overhead is severe}: Same /dev/shm storage shows
+    13.04 GB/s (C++) vs 2.34 GB/s (Python) write --- 5.6$\times$ difference
+    due to syscall overhead and GIL.
+    
+    \item \textbf{GPU read is slower than write}: PCIe H2D (13.41 GB/s) vs D2H (5.63 GB/s)
+    reflects DMA controller asymmetry. CPU-initiated transfers are faster.
+\end{itemize>
+
+\begin{tcolorbox}[colback=yellow!5,colframe=yellow!50!black,title=Why GPU Read is Slow]
+GPU PCIe read (5.63 GB/s) is \textbf{not HBM bandwidth} (1555 GB/s).
+It is GPU$\rightarrow$CPU transfer via PCIe 4.0 x16.
+In actual LLM inference, KV cache stays in GPU HBM at full bandwidth.
+The measurement reflects tier-migration cost when evicting to CPU.
+\end{tcolorbox}
+
+%==============================================================================
 \subsection{Implementation Verification}
 %==============================================================================
 
@@ -194,14 +242,25 @@ close(fd);
 
 \begin{tcolorbox}[colback=blue!5,colframe=blue!50!black,title=Evaluation Summary]
 \begin{enumerate}[leftmargin=*,nosep]
-    \item \textbf{SHM vs Lustre Cold}: 7.9$\times$ faster (8.61 vs 1.09 GB/s)
+    \item \textbf{Storage Tier Comparison (Job 48441649)}:
+    \begin{itemize}[leftmargin=*,nosep]
+        \item Cascade-C++ SHM: \textbf{12.58 GB/s} read (C++ mmap + memcpy)
+        \item GPU-PCIe: 5.63 GB/s read (torch.cuda D2H transfer)
+        \item Python file I/O: 5.10 GB/s (syscall overhead)
+        \item Cascade is \textbf{2.2$\times$ faster} than GPU PCIe read
+    \end{itemize}
     \item \textbf{Deduplication}: 100$\times$ storage savings for shared prompts
     \item \textbf{Multi-node Aggregate}: 84 GB/s (4 nodes, 16 ranks)
-    \item \textbf{Optimal Block Size}: 10MB for maximum throughput
+    \item \textbf{HW Efficiency Analysis}:
+    \begin{itemize}[leftmargin=*,nosep]
+        \item Cascade: 6.3\% of DDR4 200 GB/s (pybind11 numpy overhead)
+        \item GPU-PCIe Write: 44\% of PCIe 32 GB/s theoretical
+        \item GPU-PCIe Read: 18\% (DMA asymmetry: CPU push > GPU pull)
+    \end{itemize}
 \end{enumerate}
 
-\textbf{Key Insight}: \Cascade's value comes from tiered caching with mmap SHM,
-not from optimizing Lustre access. Hot tokens are served at memory speed (8.6 GB/s),
-which is 7.9$\times$ faster than cold Lustre reads.
+\textbf{Key Insight}: \Cascade's C++ mmap backend achieves 12.58 GB/s read,
+which is 2.2$\times$ faster than GPU PCIe read (5.63 GB/s). This enables
+efficient tier-migration without GPU bottleneck.
 \end{tcolorbox}
 

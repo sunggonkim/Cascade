@@ -75,9 +75,9 @@ bool ShardedIndex<V>::put(const BlockId& key, V value, size_t size) {
 }
 
 template<typename V>
-std::optional<V> ShardedIndex<V>::get(const BlockId& key) {
+std::optional<V> ShardedIndex<V>::get(const BlockId& key) const {
     size_t shard_id = get_shard_id(key);
-    auto& shard = shards_[shard_id];
+    const auto& shard = shards_[shard_id];
     
     std::shared_lock lock(shard.mutex);
     

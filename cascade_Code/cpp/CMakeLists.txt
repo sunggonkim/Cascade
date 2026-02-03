@@ -162,3 +162,14 @@ endif()
 message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 message(STATUS "CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "OpenSSL_INCLUDE_DIR: ${OPENSSL_INCLUDE_DIR}")
+
+# ============================================================================
+# Full System Benchmark (GPU, SHM, NVMe, Lustre)
+# ============================================================================
+add_executable(full_bench src/full_benchmark.cpp)
+target_link_libraries(full_bench 
+    CUDA::cudart
+    pthread
+    OpenMP::OpenMP_CXX
+)
+set_target_properties(full_bench PROPERTIES CUDA_ARCHITECTURES 80)

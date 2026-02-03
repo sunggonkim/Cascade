@@ -69,7 +69,7 @@ public:
     ~ShardedIndex();
     
     bool put(const BlockId& key, V value, size_t size = 0);
-    std::optional<V> get(const BlockId& key);
+    std::optional<V> get(const BlockId& key) const;  // Made const
     bool remove(const BlockId& key);
     bool contains(const BlockId& key) const;
     
