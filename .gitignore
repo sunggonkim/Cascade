@@ -114,3 +114,19 @@ hf_cache/
 *.bin
 cascade_bench
 kv_aggregator*
+# Build directories
+**/build*/
+**/CMakeFiles/
+*.so
+*.o
+*.a
+
+# Temporary files
+*.pdc
+dump.rdb
+**/.ipynb_checkpoints/
+
+# Large binary files
+*.cubin
+*.fatbin
+*.ptx
