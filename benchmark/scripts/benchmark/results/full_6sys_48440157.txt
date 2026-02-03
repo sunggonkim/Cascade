@@ -1,0 +1,74 @@
+================================================
+Job ID: 48440157
+Nodes: 4
+Start: Mon 02 Feb 2026 06:14:39 PM PST
+================================================
+All imports OK: 7.1.0 2.6.0 3.13.0 cuda: True
+torch: 2.6.0, cuda: True
+redis: 7.1.0
+h5py: 3.13.0
+
+=== Testing Cascade (SHM mmap) ===
+Cascade: Write 1.45 GB/s, Read 4.24 GB/s
+
+=== Testing vLLM (GPU HBM) ===
+vLLM: Write 8.88 GB/s, Read 7.59 GB/s
+
+=== Testing LMCache (File-based) ===
+LMCache: Write 3.03 GB/s, Read 4.96 GB/s
+
+=== Testing PDC (fsync) ===
+PDC: Write 3.03 GB/s, Read 3.78 GB/s
+
+=== Testing Redis (In-memory dict) ===
+Redis: Write 61734.44 GB/s, Read 2685.15 GB/s
+
+=== Testing HDF5 (h5py) ===
+HDF5: Write 3.05 GB/s, Read 3.68 GB/s
+
+=== Results saved to /tmp/results.json ===
+{
+  "job_id": "48440157",
+  "timestamp": "2026-02-02T18:14:52.510022",
+  "config": {
+    "block_size_mb": 256,
+    "num_blocks": 4,
+    "total_gb": 1.0
+  },
+  "systems": {
+    "Cascade": {
+      "type": "SHM mmap",
+      "write_gbps": 1.45,
+      "read_gbps": 4.24
+    },
+    "vLLM": {
+      "type": "GPU HBM",
+      "write_gbps": 8.88,
+      "read_gbps": 7.59
+    },
+    "LMCache": {
+      "type": "File-based",
+      "write_gbps": 3.03,
+      "read_gbps": 4.96
+    },
+    "PDC": {
+      "type": "fsync",
+      "write_gbps": 3.03,
+      "read_gbps": 3.78
+    },
+    "Redis": {
+      "type": "In-memory KV",
+      "write_gbps": 61734.44,
+      "read_gbps": 2685.15,
+      "note": "dict simulation"
+    },
+    "HDF5": {
+      "type": "Hierarchical",
+      "write_gbps": 3.05,
+      "read_gbps": 3.68
+    }
+  }
+}
+================================================
+End: Mon 02 Feb 2026 06:14:58 PM PST
+================================================
