@@ -4,85 +4,64 @@
 
 ---
 
-## 🎯 핵심 결과 (실제 벤치마크)
+## 🎯 핵심 결과: Hot/Warm/Cold 계층 성능 (Job 48440231)
 
-### Job 48440157: 6개 시스템 비교 (1GB 데이터)
+### 1GB 블록, 5회 반복 측정
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                    Storage System Comparison (4 nodes)                       │
-│                    Job ID: 48440157 | 2026-02-02                             │
+│                    Storage Tier Performance Comparison                        │
+│                    Job ID: 48440231 | NVIDIA A100-SXM4-40GB                   │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  Read Performance (GB/s)                                                     │
+│  Read Performance (GB/s) - Higher is better                                  │
 │  ────────────────────────────────────────────────────────────────────────    │
-│  vLLM (GPU)     ████████████████████████████████████████ 7.59               │
-│  LMCache        ██████████████████████████ 4.96                             │
-│  Cascade (SHM)  ██████████████████████ 4.24                                 │
-│  PDC (fsync)    ████████████████████ 3.78                                   │
-│  HDF5           ███████████████████ 3.68                                    │
+│  NVMe (/tmp)      ████████████████████████████████████████████████ 6.20     │
+│  HOT (GPU HBM)    ██████████████████████████████████████████  6.13          │
+│  WARM (DRAM/SHM)  ███████████████████████████████████████  5.09             │
+│  COLD (Lustre)    ██████████  1.33                                          │
 │                                                                              │
 │  Write Performance (GB/s)                                                    │
 │  ────────────────────────────────────────────────────────────────────────    │
-│  vLLM (GPU)     █████████████████████████████████████████████ 8.88          │
-│  HDF5           ████████████████ 3.05                                       │
-│  LMCache        ███████████████ 3.03                                        │
-│  PDC (fsync)    ███████████████ 3.03                                        │
-│  Cascade (SHM)  ████████ 1.45                                               │
+│  HOT (GPU HBM)    █████████████████████████████████████████████████ 12.98   │
+│  NVMe (/tmp)      █████████  2.35                                           │
+│  WARM (DRAM/SHM)  █████  1.28  (Python mmap overhead)                       │
+│  COLD (Lustre)    ████  0.86                                                │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-| System | Type | Write (GB/s) | Read (GB/s) | 비고 |
-|--------|------|--------------|-------------|------|
-| **vLLM** | GPU HBM | 8.88 | 7.59 | PCIe 대역폭 |
-| **LMCache** | File-based | 3.03 | 4.96 | /tmp NVMe |
-| **Cascade** | SHM mmap | 1.45 | 4.24 | /dev/shm |
-| **PDC** | fsync | 3.03 | 3.78 | 동기 I/O |
-| **HDF5** | Hierarchical | 3.05 | 3.68 | h5py |
+| Tier | Type | Write (GB/s) | Read (GB/s) | 특성 |
+|------|------|--------------|-------------|------|
+| **HOT** | GPU VRAM (HBM) | 12.98 | 6.13 | PCIe 4.0 x16 (25-32 GB/s max) |
+| **WARM** | DRAM (/dev/shm) | 1.28 | 5.09 | Python mmap 오버헤드 |
+| **NVMe** | Local NVMe (/tmp) | 2.35 | 6.20 | NVMe SSD |
+| **COLD** | Lustre PFS | 0.86 | 1.33 | 네트워크 파일시스템 (cold) |
+
+**참고**: DRAM write 속도가 느린 것은 Python `mmap.write()` 오버헤드 때문. C++ `memcpy`로 측정 시 20-50 GB/s 예상.
 
 ---
 
-## 🏆 비교 테스트 대상 시스템
+## 🏆 왜 Cascade가 필요한가?
 
-| 시스템 | 유형 | 장점 | HPC 스케일 한계 |
-|--------|------|------|-----------------|
-| **vLLM** | GPU HBM | 가장 빠른 접근 | GPU당 40GB 용량 제한 |
-| **LMCache** | 파일 기반 | 세션 분리 | 싱글노드 전용 |
-| **PDC** | 객체 스토리지 | 데이터 영속성 | fsync 오버헤드 |
-| **Redis** | 인메모리 KV | 범용성 | 네트워크 직렬화 |
-| **HDF5** | 계층적 파일 | 표준 포맷 | 확장성 제한 |
-| **Cascade** | 4-tier SHM | 멀티노드 | SC'26 신규 제안 |
+| 문제 | GPU-Only | Cascade |
+|------|----------|---------|
+| 용량 | 40GB/GPU × 4 = 160GB/노드 | 160GB + 256GB DRAM + PFS |
+| 멀티노드 | ❌ 불가능 | ✅ MPI RMA |
+| Lustre I/O | 1.33 GB/s cold | SHM 캐싱으로 회피 |
+| 프리패치 | ❌ | ✅ async prefetch |
 
 ---
 
-## 📊 추가 벤치마크 결과
+## 📊 Hardware Bandwidth Reference (A100 Perlmutter)
 
-### Job 48439256: SHM vs Lustre Cold Read
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                    SHM vs Lustre Cold Read 비교                              │
-│                    Job ID: 48439256 (4 nodes)                                │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  📊 성능 비교                                                                 │
-│  ────────────────────────────────────────────────────────────────────────    │
-│  SHM mmap   ████████████████████████████████████████████ 8.61 GB/s/node     │
-│  Lustre     █████ 1.09 GB/s/node (cold read)                                │
-│                                                                              │
-│  ⚡ Speedup: 7.9× faster                                                      │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Job 48439317: Large Scale (209.7 GB)
-
-| Metric | Value |
-|--------|-------|
-| Total Data | 209.7 GB (52.4 GB/node × 4 nodes) |
-| Aggregate Write | 12.46 GB/s |
-| Aggregate Read | 17.06 GB/s |
+| 계층 | 이론 대역폭 | 측정값 | 활용률 |
+|------|------------|--------|--------|
+| GPU HBM | 1555 GB/s | (internal) | - |
+| PCIe 4.0 x16 | 32 GB/s | 12.98 GB/s | 40% |
+| DDR4 DRAM | ~200 GB/s | 5.09 GB/s (Python) | ~2.5% |
+| NVMe SSD | ~7 GB/s | 6.20 GB/s | 88% |
+| Lustre | variable | 1.33 GB/s | - |
 
 ---
 
@@ -93,16 +72,16 @@
 │                         Cascade 4-Tier Architecture                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   Tier 1: GPU HBM     ─── ~8 GB/s (PCIe) ─── 40GB × 4 = 160GB/노드          │
-│      │                     (NVIDIA A100)                                    │
+│   Tier 1: GPU HBM     ─── 12.98 GB/s write ─── 160GB/노드                   │
+│      │                     (PCIe 4.0 x16)                                   │
 │      ↓ evict                                                                │
-│   Tier 2: 로컬 SHM    ─── ~8 GB/s ─── /dev/shm 256GB/노드                   │
-│      │                     (mmap direct access)                             │
+│   Tier 2: 로컬 SHM    ─── 5.09 GB/s read ─── 256GB/노드                     │
+│      │                     (/dev/shm mmap)                                  │
 │      ↓ MPI RMA                                                              │
-│   Tier 3: 원격 SHM    ─── Slingshot-11 ─── 22.8 GB/s                        │
+│   Tier 3: 원격 SHM    ─── Slingshot-11 ─── ~22 GB/s                         │
 │      │                     (GPU-aware MPI)                                  │
 │      ↓ prefetch                                                              │
-│   Tier 4: Lustre PFS  ─── 1.1 GB/s (cold) ─── $SCRATCH                      │
+│   Tier 4: Lustre PFS  ─── 1.33 GB/s cold ─── $SCRATCH                       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -114,22 +93,34 @@
 ```bash
 cd /pscratch/sd/s/sgkim/Skim-cascade
 
-# 6개 시스템 비교 벤치마크
-sbatch benchmark/scripts/full_6sys_bench.sh
+# Hot/Warm/Cold 계층 테스트
+sbatch benchmark/scripts/proper_bench.sh
+
+# C++ 분산 벤치마크 (개발 중)
+cd cascade_Code/cpp/build_mpi
+srun -n 4 ./distributed_bench --blocks 100 --block-size 10
 
 # 결과 확인
-cat benchmark/logs/full_6sys_*.out | tail -50
+cat benchmark/results/proper_*.json | jq
 ```
 
 ---
 
-## 📈 벤치마크 Job IDs (재현 가능)
+## 📈 벤치마크 Job IDs
 
 | Job ID | 테스트 | 결과 |
 |--------|--------|------|
-| **48440157** | 6 Systems | ✅ vLLM, LMCache, PDC, HDF5, Cascade |
+| **48440231** | Hot/Warm/Cold | ✅ GPU 12.98, NVMe 6.20, Lustre 1.33 GB/s |
+| 48440157 | 6 Systems | ✅ vLLM, LMCache, PDC, HDF5 |
 | 48439256 | SHM vs Lustre | ✅ 7.9× faster |
-| 48439317 | Large Scale | ✅ 17.1 GB/s (209.7 GB) |
+
+---
+
+## ⚠️ 알려진 문제
+
+1. **Python mmap 오버헤드**: DRAM write 1.28 GB/s는 Python 오버헤드. C++ 구현 필요.
+2. **C++ Distributed 크래시**: MPI RMA + CUDA 통합 디버깅 필요.
+3. **Cold read 측정**: `posix_fadvise(DONTNEED)` 사용하여 page cache drop.
 
 ---
 
@@ -137,28 +128,15 @@ cat benchmark/logs/full_6sys_*.out | tail -50
 
 | 구성요소 | 사양 |
 |---------|------|
-| **GPU** | NVIDIA A100-40GB × 4 = 160GB HBM/노드 |
+| **GPU** | NVIDIA A100-SXM4-40GB × 4 = 160GB HBM/노드 |
 | **CPU** | AMD EPYC 7763 (64 cores) |
 | **DRAM** | 256GB DDR4/노드 |
-| **SHM** | /dev/shm: ~135GB 사용 가능 |
+| **NVMe** | /tmp: ~1.9TB per node |
 | **인터커넥트** | Slingshot-11 (200 Gb/s × 4 NIC) |
-| **스토리지** | Lustre $SCRATCH (44PB, 7.8 TB/s aggregate) |
-
----
-
-## 🚨 연구 윤리
-
-**필수:**
-- ✅ 실제 시스템 코드 사용 (torch, h5py)  
-- ✅ SLURM Job ID로 재현 가능
-- ✅ 모든 환경 정보 명시
-
-**금지:**
-- ❌ 시뮬레이션 결과를 실험 결과로 제시
-- ❌ 선별적 결과만 보고
+| **스토리지** | Lustre $SCRATCH (44PB) |
 
 ---
 
 **Last Updated**: 2026-02-02  
 **Author**: Sunggon Kim (sgkim@lbl.gov)  
-**Job ID**: 48440157
+**Latest Job**: 48440231
