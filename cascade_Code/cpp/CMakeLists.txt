@@ -173,3 +173,14 @@ target_link_libraries(full_bench
     OpenMP::OpenMP_CXX
 )
 set_target_properties(full_bench PROPERTIES CUDA_ARCHITECTURES 80)
+
+# ============================================================================
+# Fair Tier Benchmark (True Hot D2D, SHM, Lustre)
+# ============================================================================
+add_executable(fair_tier_bench src/fair_tier_bench.cpp)
+target_link_libraries(fair_tier_bench 
+    CUDA::cudart
+    pthread
+    OpenMP::OpenMP_CXX
+)
+set_target_properties(fair_tier_bench PROPERTIES CUDA_ARCHITECTURES 80)
